@@ -141,7 +141,12 @@ npm run build       # Build WASM
 npm run deploy      # Deploy (requires .env + funded Massa account)
 ```
 
-Configure `.env` in `conrtact/` as described in `conrtact/README.md`, then wire the deployed address into the frontend via an env var (for example `VITE_MASSA_CONTRACT_ADDRESS`).
+Configure `.env` in `conrtact/` as described in `conrtact/README.md`, then wire the deployed address into the frontend via an env var, for example:
+
+```bash
+# client/.env
+VITE_MASSA_CONTRACT_ADDRESS=AS1zSM2VZZAJdhFdKLRn6tEmMLSifwysWsCgpket3QvLutRgLEyB
+```
 
 ---
 
