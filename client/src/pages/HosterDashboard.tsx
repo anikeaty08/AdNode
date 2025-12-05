@@ -26,10 +26,11 @@ import {
   StopCircle,
   BarChart3,
   Settings,
+  Trash2,
 } from 'lucide-react';
 import { useWallet } from '@/contexts/WalletContext';
 import { useToast } from '@/hooks/use-toast';
-import type { AdCategory, PricingModel, AdStatus } from '@shared/schema';
+import type { AdCategory, PricingModel, AdStatus, AdCampaign } from '@shared/schema';
 import {
   createCampaignOnChain,
   fetchCampaigns,
@@ -37,6 +38,8 @@ import {
   updateCampaignStatusOnChain,
   createLocalCampaignForOwner,
   countLocalCampaigns,
+  deleteCampaignOnChain,
+  updateCampaignDetailsOnChain,
 } from '@/lib/massa-contract';
 import { contractConfigured } from '@/lib/massa-contract';
 
@@ -48,6 +51,17 @@ export default function HosterDashboard() {
   const queryClient = useQueryClient();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editingCampaign, setEditingCampaign] = useState<AdCampaign | null>(null);
+  const [editData, setEditData] = useState({
+    title: '',
+    description: '',
+    category: '' as AdCategory | '',
+    targetUrl: '',
+    creativeUri: '',
+    pricingModel: 'cpc' as PricingModel,
+    rate: '' as string | number,
+  });
   
   const [formData, setFormData] = useState({
     title: '',
@@ -77,17 +91,12 @@ export default function HosterDashboard() {
   const campaigns = useMemo(
     () => {
       if (!ownerAddress) {
-        return [];
+        return allCampaigns;
       }
-      // Filter campaigns by owner address (case-insensitive comparison)
-      // Also include local campaigns if the owner matches
       return allCampaigns.filter((campaign) => {
         const campaignOwner = campaign.owner?.toLowerCase() || '';
         const userOwner = ownerAddress.toLowerCase();
-        // Match exact owner address
-        return campaignOwner === userOwner || 
-               // Also match if it starts with local_hoster_ and matches the user's identifier
-               (campaignOwner.startsWith('local_hoster_') && ownerAddress);
+        return campaignOwner === userOwner;
       });
     },
     [allCampaigns, ownerAddress],
@@ -144,23 +153,53 @@ export default function HosterDashboard() {
         }
       }
 
-      // If user chose the free plan, enforce a 3-campaign limit per hoster
+      // If user chose the free plan, create on-chain campaign with minimal budget
+      // This ensures campaigns are visible across ALL accounts and browsers
       if (useFreePlan) {
-        // Use the actual owner address, or a unique identifier if not connected
-        const freePlanOwner = ownerAddress || `local_hoster_${Date.now()}`;
-        const existing = countLocalCampaigns(freePlanOwner);
-        if (existing >= 3) {
-          throw new Error('Free plan limit reached: you can create up to 3 free campaigns.');
+        if (!accountProvider) {
+          throw new Error('Please connect your wallet to create a free plan campaign. It will be stored on-chain with minimal budget.');
         }
-        const created = await createLocalCampaignForOwner(freePlanOwner, {
+        
+        // Check campaign limit (count both on-chain and local)
+        const existing = countLocalCampaigns(ownerAddress);
+        if (existing >= 10) {
+          throw new Error('Free plan limit reached: you can create up to 10 free campaigns.');
+        }
+        
+        // Use minimal budget for free plan (0.000001 MAS)
+        // This makes campaigns visible to everyone on-chain
+        const minimalBudget = 0.000001;
+        const minimalRate = Math.max(
+          formData.pricingModel === 'cpc' ? Number(formData.costPerClick) : Number(formData.costPerImpression),
+          0.0001 // Minimum rate
+        );
+        
+        // Create on-chain campaign with minimal budget
+        // This makes it visible to ALL accounts across ALL browsers
+        console.log('[createCampaign] Creating on-chain free plan campaign...');
+        await createCampaignOnChain(accountProvider, {
+          title: formData.title,
+          description: formData.description,
+          category: formData.category as AdCategory,
+          targetUrl: formData.targetUrl,
+          creativeUri,
+          pricingModel: formData.pricingModel,
+          rate: minimalRate,
+          budget: minimalBudget,
+        });
+        console.log('[createCampaign] On-chain campaign created successfully');
+        
+        // Also save locally for immediate visibility (will be synced with on-chain data)
+        // This ensures immediate visibility while waiting for blockchain confirmation
+        const created = await createLocalCampaignForOwner(ownerAddress, {
           title: formData.title,
           description: formData.description,
           category: formData.category as any,
           targetUrl: formData.targetUrl,
           creativeUri,
           pricingModel: formData.pricingModel as any,
-          rate: formData.pricingModel === 'cpc' ? Number(formData.costPerClick) : Number(formData.costPerImpression),
-          budget: budgetValue || 0,
+          rate: minimalRate,
+          budget: minimalBudget,
         });
         return created;
       }
@@ -184,7 +223,7 @@ export default function HosterDashboard() {
         budget: budgetValue,
       });
     },
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       toast({
         title: 'Campaign created and activated!',
         description: 'Your campaign is now live and visible to everyone.',
@@ -202,19 +241,38 @@ export default function HosterDashboard() {
         costPerImpression: '',
       });
       setSelectedFile(null);
+      const wasFreePlan = useFreePlan;
       setUseFreePlan(false);
-      // Invalidate and immediately refetch all campaign queries to ensure immediate visibility
+      
+      // Immediately invalidate and refetch ALL campaign queries for instant visibility
+      // This ensures the campaign is visible in marketplace, developer dashboard, and hoster dashboard RIGHT AWAY
+      console.log('[createCampaign] Immediately invalidating and refetching campaign queries...');
       queryClient.invalidateQueries({ queryKey: ['campaigns'] });
       queryClient.invalidateQueries({ queryKey: ['hoster-profile', ownerAddress] });
       
-      // For on-chain campaigns, wait a moment for blockchain confirmation, then refetch
-      if (!useFreePlan && contractConfigured) {
-        // Wait 2 seconds for blockchain confirmation
-        await new Promise(resolve => setTimeout(resolve, 2000));
+      // Force immediate refetch to show the new campaign right away in all views
+      await queryClient.refetchQueries({ queryKey: ['campaigns'] });
+      console.log('[createCampaign] Campaign queries refetched - campaign should be visible now');
+      
+      // For on-chain campaigns, also wait for blockchain confirmation and refetch again
+      if (contractConfigured) {
+        console.log('[createCampaign] Waiting for blockchain confirmation for on-chain sync...');
+        // Wait 3 seconds for blockchain confirmation, then refetch to get on-chain data
+        setTimeout(async () => {
+          await queryClient.refetchQueries({ queryKey: ['campaigns'] });
+          console.log('[createCampaign] On-chain campaign synced');
+        }, 3000);
       }
       
-      // Force immediate refetch to show the new campaign right away
-      await queryClient.refetchQueries({ queryKey: ['campaigns'] });
+      // Also trigger a storage event to notify other tabs/windows about the new campaign
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const timestamp = Date.now().toString();
+        window.localStorage.setItem('massa_campaigns_updated', timestamp);
+        // Dispatch custom event for same-tab listeners (StorageEvent only works across tabs)
+        window.dispatchEvent(new CustomEvent('massa_campaigns_updated', {
+          detail: { timestamp, campaignId: result?.id }
+        }));
+      }
     },
     onError: (error: unknown) => {
       let errorMessage = 'Please try again with valid parameters.';
@@ -253,6 +311,69 @@ export default function HosterDashboard() {
         title: 'Unable to update campaign',
         description:
           error instanceof Error ? error.message : 'Please try again later.',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      if (!accountProvider) {
+        throw new Error('Connect your wallet to delete on-chain campaigns.');
+      }
+      await deleteCampaignOnChain(accountProvider, id);
+    },
+    onSuccess: () => {
+      toast({
+        title: 'Campaign deleted',
+        description: 'The campaign was removed on-chain.',
+      });
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] });
+    },
+    onError: (error: unknown) => {
+      toast({
+        title: 'Unable to delete campaign',
+        description: error instanceof Error ? error.message : 'Please try again later.',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const updateDetailsMutation = useMutation({
+    mutationFn: async () => {
+      if (!editingCampaign) {
+        throw new Error('No campaign selected to update.');
+      }
+      if (!accountProvider) {
+        throw new Error('Connect your wallet to update campaign details.');
+      }
+      const rateNum = Number(editData.rate);
+      if (!rateNum || rateNum <= 0) {
+        throw new Error('Enter a valid rate.');
+      }
+      await updateCampaignDetailsOnChain(accountProvider, editingCampaign.id, {
+        title: editData.title,
+        description: editData.description,
+        category: editData.category as AdCategory,
+        targetUrl: editData.targetUrl,
+        creativeUri: editData.creativeUri,
+        pricingModel: editData.pricingModel as PricingModel,
+        rate: rateNum,
+      });
+    },
+    onSuccess: async () => {
+      toast({
+        title: 'Campaign updated',
+        description: 'Details have been saved on-chain.',
+      });
+      setShowEditModal(false);
+      setEditingCampaign(null);
+      await queryClient.refetchQueries({ queryKey: ['campaigns'] });
+    },
+    onError: (error: unknown) => {
+      toast({
+        title: 'Unable to update campaign',
+        description: error instanceof Error ? error.message : 'Please try again later.',
         variant: 'destructive',
       });
     },
@@ -308,7 +429,7 @@ export default function HosterDashboard() {
             <Alert>
               <AlertTitle>Wallet not connected</AlertTitle>
               <AlertDescription>
-                Connect your Massa wallet to publish campaigns and sign transactions.
+                Connect your Massa wallet to publish campaigns. Free plan campaigns are also stored on-chain (with minimal 0.000001 MAS budget) so they're visible to everyone across all browsers.
               </AlertDescription>
             </Alert>
           )}
@@ -426,8 +547,41 @@ export default function HosterDashboard() {
                           >
                             <StopCircle className="h-4 w-4" />
                           </Button>
-                          <Button size="icon" variant="outline" data-testid={`button-settings-${campaign.id}`}>
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            data-testid={`button-settings-${campaign.id}`}
+                            onClick={() => {
+                              setEditingCampaign(campaign);
+                              setEditData({
+                                title: campaign.title,
+                                description: campaign.description,
+                                category: campaign.category,
+                                targetUrl: campaign.targetUrl,
+                                creativeUri: campaign.creativeUri,
+                                pricingModel: campaign.pricingModel as PricingModel,
+                                rate: (campaign.pricingModel === 'cpc' ? (campaign.costPerClick ?? 0) : (campaign.costPerImpression ?? 0)),
+                              });
+                              setShowEditModal(true);
+                            }}
+                          >
                             <Settings className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="destructive"
+                            data-testid={`button-delete-${campaign.id}`}
+                            onClick={() => {
+                              const confirmed = typeof window !== 'undefined'
+                                ? window.confirm('Delete this campaign permanently?')
+                                : true;
+                              if (confirmed) {
+                                deleteMutation.mutate(campaign.id);
+                              }
+                            }}
+                            disabled={deleteMutation.isPending}
+                          >
+                            <Trash2 className="h-4 w-4" />
                           </Button>
                         </div>
                       </div>
@@ -543,7 +697,7 @@ export default function HosterDashboard() {
                     <p className="text-sm text-muted-foreground">
                       These rules mirror the specification in <em>projecct</em>: unique wallet, timestamp, IP hash, and protection against repeated spam.
                     </p>
-                  <Button asChild variant="link" className="px-0">
+                  <Button asChild variant="ghost" className="px-0">
                     <a href="/innovation">Explore the Innovation Hub</a>
                   </Button>
                 </CardContent>
@@ -658,7 +812,7 @@ export default function HosterDashboard() {
               <div className="flex items-center gap-3">
                 <div className="flex-1">
                   <p className="text-sm font-medium">Use free demo plan</p>
-                  <p className="text-xs text-muted-foreground">Allow posting this campaign without escrow (limit 3 free campaigns per hoster)</p>
+                  <p className="text-xs text-muted-foreground">Create on-chain campaign with minimal budget (0.000001 MAS). Visible to all accounts across all browsers. Limit: 10 free campaigns per hoster.</p>
                 </div>
                 <div>
                   <Switch checked={useFreePlan} onCheckedChange={(v) => setUseFreePlan(Boolean(v))} />
@@ -672,12 +826,18 @@ export default function HosterDashboard() {
                 <Input
                   id="costPerClick"
                   type="number"
-                  step="0.01"
+                  step="0.0001"
+                  min="0.0001"
                   placeholder="0.10"
                   value={formData.costPerClick}
                   onChange={(e) => setFormData({ ...formData, costPerClick: e.target.value })}
                   data-testid="input-cost-per-click"
                 />
+                {useFreePlan && (
+                  <p className="text-xs text-muted-foreground">
+                    Free plan: Will use minimum rate (0.0001 MAS) for on-chain visibility across all browsers
+                  </p>
+                )}
               </div>
             ) : (
               <div className="space-y-2">
@@ -685,12 +845,18 @@ export default function HosterDashboard() {
                 <Input
                   id="costPerImpression"
                   type="number"
-                  step="0.001"
+                  step="0.0001"
+                  min="0.0001"
                   placeholder="2.00"
                   value={formData.costPerImpression}
                   onChange={(e) => setFormData({ ...formData, costPerImpression: e.target.value })}
                   data-testid="input-cost-per-impression"
                 />
+                {useFreePlan && (
+                  <p className="text-xs text-muted-foreground">
+                    Free plan: Will use minimum rate (0.0001 MAS) for on-chain visibility across all browsers
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -706,6 +872,77 @@ export default function HosterDashboard() {
             >
               {createCampaignMutation.isPending ? 'Creating...' : 'Create Campaign'}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showEditModal} onOpenChange={setShowEditModal}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="font-display text-2xl">Update Campaign</DialogTitle>
+            <DialogDescription>Modify details and save on-chain</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="edit-title">Title</Label>
+                <Input id="edit-title" value={editData.title}
+                  onChange={(e) => setEditData((d) => ({ ...d, title: e.target.value }))} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-description">Description</Label>
+                <Textarea id="edit-description" value={editData.description}
+                  onChange={(e) => setEditData((d) => ({ ...d, description: e.target.value }))} />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Category</Label>
+                  <Select value={editData.category || ''} onValueChange={(v) => setEditData((d) => ({ ...d, category: v as AdCategory }))}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select category" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {categories.map((c) => (
+                        <SelectItem key={c} value={c}>{c}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Pricing</Label>
+                  <Select value={editData.pricingModel} onValueChange={(v) => setEditData((d) => ({ ...d, pricingModel: v as PricingModel }))}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="cpc">CPC</SelectItem>
+                      <SelectItem value="cpm">CPM</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="edit-rate">Rate (MAS)</Label>
+                  <Input id="edit-rate" type="number" min={0} step="0.000001" value={String(editData.rate)}
+                    onChange={(e) => setEditData((d) => ({ ...d, rate: e.target.value }))} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="edit-target">Target URL</Label>
+                  <Input id="edit-target" value={editData.targetUrl}
+                    onChange={(e) => setEditData((d) => ({ ...d, targetUrl: e.target.value }))} />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-creative">Creative URL / data URI</Label>
+                <Input id="edit-creative" value={editData.creativeUri}
+                  onChange={(e) => setEditData((d) => ({ ...d, creativeUri: e.target.value }))} />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowEditModal(false)}>Cancel</Button>
+            <Button onClick={() => updateDetailsMutation.mutate()} disabled={updateDetailsMutation.isPending}>Save</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMemo, useState, useEffect } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -20,17 +20,45 @@ export default function Marketplace() {
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [selectedAd, setSelectedAd] = useState<AdCampaign | null>(null);
   const [showIntegrationModal, setShowIntegrationModal] = useState(false);
+  const queryClient = useQueryClient();
 
   const { data: allAds = [], isFetching } = useQuery({
     queryKey: ['campaigns', 'marketplace'],
-    queryFn: () => fetchCampaigns({ limit: 200, status: 'active' }), // Increased limit to show all campaigns
+    queryFn: () => {
+      console.log('[Marketplace] Fetching ALL campaigns from ALL accounts...');
+      return fetchCampaigns({ limit: 200, status: 'active' }); // Fetch ALL active campaigns from ALL accounts (no owner filter)
+    },
     staleTime: 0, // Always consider data stale to ensure fresh data when refetched
     refetchOnMount: true, // Always refetch when component mounts
     refetchOnWindowFocus: true, // Refetch when window regains focus
+    refetchInterval: 2000, // Refetch every 2 seconds to catch new campaigns IMMEDIATELY
   });
 
+  // Listen for storage events to refresh when campaigns are created in other tabs
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'massa_campaigns_updated') {
+        // Refetch campaigns when they're updated in another tab
+        queryClient.invalidateQueries({ queryKey: ['campaigns'] });
+      }
+    };
+
+    // Also listen for same-tab custom events (dispatched manually)
+    const handleCustomEvent = () => {
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] });
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('massa_campaigns_updated', handleCustomEvent);
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('massa_campaigns_updated', handleCustomEvent);
+    };
+  }, [queryClient]);
+
   const filteredAds = useMemo(() => {
-    // First, ensure we only show active campaigns
+    // The fetchCampaigns already filters by status='active', but double-check
     const activeAds = allAds.filter((ad) => ad.status === 'active');
     
     // Then apply search and category filters
@@ -74,7 +102,7 @@ export default function Marketplace() {
           {!contractConfigured && (
             <Alert className="mb-6">
               <AlertDescription>
-                Smart contract not configured – showing curated campaigns so you can still explore the flow.
+                <strong>Smart contract not configured.</strong> To see campaigns across all accounts and browsers, set <code>VITE_MASSA_CONTRACT_ADDRESS</code> in your environment. Currently showing local campaigns (visible only in this browser).
               </AlertDescription>
             </Alert>
           )}

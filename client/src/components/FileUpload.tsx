@@ -141,24 +141,27 @@ export function FileUpload({
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
-            {...getRootProps()}
-            className={`
-              border-2 border-dashed rounded-lg p-12 text-center cursor-pointer
-              transition-all duration-200 hover-elevate active-elevate-2
-              ${isDragActive ? 'border-primary bg-primary/5' : 'border-border'}
-            `}
-            data-testid="dropzone-file-upload"
           >
-            <input {...getInputProps()} data-testid="input-file-upload" />
-            <div className="flex flex-col items-center gap-4">
-              {getFileIcon()}
-              <div>
-                <p className="font-medium">
-                  {isDragActive ? 'Drop file here' : description}
-                </p>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Maximum file size: {(maxSize / 1024 / 1024).toFixed(0)}MB
-                </p>
+            <div
+              {...getRootProps()}
+              className={`
+                border-2 border-dashed rounded-lg p-12 text-center cursor-pointer
+                transition-all duration-200 hover-elevate active-elevate-2
+                ${isDragActive ? 'border-primary bg-primary/5' : 'border-border'}
+              `}
+              data-testid="dropzone-file-upload"
+            >
+              <input {...getInputProps()} data-testid="input-file-upload" />
+              <div className="flex flex-col items-center gap-4">
+                {getFileIcon()}
+                <div>
+                  <p className="font-medium">
+                    {isDragActive ? 'Drop file here' : description}
+                  </p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Maximum file size: {(maxSize / 1024 / 1024).toFixed(0)}MB
+                  </p>
+                </div>
               </div>
             </div>
           </motion.div>

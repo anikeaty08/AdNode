@@ -505,6 +505,118 @@ export function updateCampaignStatus(
   return new Args().add<u32>(id).serialize();
 }
 
+export function updateCampaignDetails(binaryArgs: StaticArray<u8>): StaticArray<u8> {
+  const caller = Context.caller().toString();
+  const args = new Args(binaryArgs);
+  const id = args.nextU32().expect('id');
+  const title = args.nextString().expect('title');
+  const description = args.nextString().expect('description');
+  const category = args.nextString().expect('category');
+  const targetUrl = args.nextString().expect('target');
+  const creativeUri = args.nextString().expect('creative');
+  const pricingModel = args.nextString().expect('pricing');
+  const rate = args.nextU64().expect('rate');
+
+  assert(rate >= MIN_RATE, 'Rate too low');
+  assert(
+    pricingModel == 'cpc' || pricingModel == 'cpm',
+    'Invalid pricing model',
+  );
+
+  const campaign = requireCampaign(id);
+  assert(campaign.owner == caller, 'Only owner');
+
+  campaign.title = title;
+  campaign.description = description;
+  campaign.category = category;
+  campaign.targetUrl = targetUrl;
+  campaign.creativeUri = creativeUri;
+  campaign.pricingModel = pricingModel;
+  campaign.rate = rate;
+  campaign.updatedAt = now();
+  saveCampaign(campaign);
+
+  generateEvent(`CAMPAIGN_UPDATED:${id.toString()}`);
+  return new Args().add<u32>(id).serialize();
+}
+
+export function deleteCampaign(binaryArgs: StaticArray<u8>): void {
+  const caller = Context.caller().toString();
+  const args = new Args(binaryArgs);
+  const id = args.nextU32().expect('id');
+  const key = id.toString();
+  assert(campaigns.contains(key), 'Campaign not found');
+  const campaign = requireCampaign(id);
+  assert(campaign.owner == caller, 'Only owner');
+
+  if (campaign.status == 'active') {
+    decreaseCounter(ACTIVE_CAMPAIGN_COUNTER_KEY);
+    const hoster = getHoster(caller);
+    if (hoster.activeCampaigns > 0) hoster.activeCampaigns -= 1;
+    hoster.updatedAt = now();
+    saveHoster(hoster);
+  }
+
+  const remaining = campaign.budget > campaign.spent
+    ? campaign.budget - campaign.spent
+    : 0;
+  if (remaining > 0) {
+    decreaseAmount(LOCKED_BUDGET_KEY, remaining);
+  }
+
+  // Remove from storage
+  campaigns.delete(key);
+  generateEvent(`CAMPAIGN_DELETED:${caller}:${id.toString()}`);
+}
+
+export function recordImpression(binaryArgs: StaticArray<u8>): StaticArray<u8> {
+  const args = new Args(binaryArgs);
+  const id = args.nextU32().expect('id');
+  const campaign = requireCampaign(id);
+  assert(campaign.status == 'active', 'Campaign not active');
+  campaign.impressions += 1;
+  campaign.updatedAt = now();
+  saveCampaign(campaign);
+  increaseAmount(IMPRESSIONS_KEY, 1);
+  const devAddr = Context.caller().toString();
+  const developer = getDeveloper(devAddr);
+  developer.impressions += 1;
+  developer.updatedAt = campaign.updatedAt;
+  if (campaign.pricingModel == 'cpm') {
+    if (developer.impressions % 1000 == 0) {
+      developer.pendingPayout += campaign.rate;
+      decreaseAmount(LOCKED_BUDGET_KEY, campaign.rate);
+      increaseAmount(SPENT_BUDGET_KEY, campaign.rate);
+    }
+  }
+  saveDeveloper(developer);
+  generateEvent(`IMPRESSION:${id.toString()}:${devAddr}`);
+  return new Args().add<u32>(id).serialize();
+}
+
+export function recordClick(binaryArgs: StaticArray<u8>): StaticArray<u8> {
+  const args = new Args(binaryArgs);
+  const id = args.nextU32().expect('id');
+  const campaign = requireCampaign(id);
+  assert(campaign.status == 'active', 'Campaign not active');
+  campaign.clicks += 1;
+  campaign.updatedAt = now();
+  saveCampaign(campaign);
+  increaseAmount(CLICKS_KEY, 1);
+  const devAddr = Context.caller().toString();
+  const developer = getDeveloper(devAddr);
+  developer.clicks += 1;
+  developer.updatedAt = campaign.updatedAt;
+  if (campaign.pricingModel == 'cpc') {
+    developer.pendingPayout += campaign.rate;
+    decreaseAmount(LOCKED_BUDGET_KEY, campaign.rate);
+    increaseAmount(SPENT_BUDGET_KEY, campaign.rate);
+  }
+  saveDeveloper(developer);
+  generateEvent(`CLICK:${id.toString()}:${devAddr}`);
+  return new Args().add<u32>(id).serialize();
+}
+
 export function claimDeveloperEarnings(
   _binaryArgs: StaticArray<u8>,
 ): StaticArray<u8> {

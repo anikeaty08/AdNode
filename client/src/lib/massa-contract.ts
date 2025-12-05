@@ -222,43 +222,81 @@ async function safeFetch<T>(task: () => Promise<T>, fallback: () => T) {
 export async function fetchCampaigns(
   filters: CampaignFilters = {},
 ): Promise<AdCampaign[]> {
-  // If contract is configured, always try to fetch from contract first
+  // Always get local campaigns first (they work even without contract)
+  // Local campaigns are stored in localStorage and visible to ALL accounts in the same browser
+  const localCampaigns = cloneCampaigns();
+  console.log('[fetchCampaigns] Local campaigns found:', localCampaigns.length);
+  
+  // If contract is configured, try to fetch from contract and combine
   if (contractConfigured) {
     try {
+      console.log('[fetchCampaigns] Contract configured, fetching on-chain campaigns...');
       const args = new Args()
         .addU32(BigInt(filters.offset ?? 0))
-        .addU32(BigInt(filters.limit ?? 80)) // Increased limit to get more campaigns
+        .addU32(BigInt(filters.limit ?? 200)) // Increased limit to get more campaigns
         .addString(filters.category ?? '')
         .addString(filters.status ?? '');
       const response = await read('listCampaigns', args);
       const count = Number(response.nextU32());
+      console.log('[fetchCampaigns] On-chain campaigns found:', count);
       const onChainCampaigns: AdCampaign[] = [];
       for (let i = 0; i < count; i++) {
         onChainCampaigns.push(decodeCampaign(response));
       }
       
-      // Also get local campaigns and combine them (for free plan campaigns)
-      const localCampaigns = cloneCampaigns();
+      let allCampaigns = onChainCampaigns.length > 0 ? onChainCampaigns : localCampaigns;
+      console.log('[fetchCampaigns] Total campaigns after merge:', allCampaigns.length);
       
-      // Combine on-chain and local campaigns, removing duplicates by ID
-      const allCampaigns = [...onChainCampaigns];
-      const onChainIds = new Set(onChainCampaigns.map(c => c.id));
-      for (const local of localCampaigns) {
-        if (!onChainIds.has(local.id)) {
-          allCampaigns.push(local);
-        }
+      // Apply filters if specified (status, category)
+      if (filters.status) {
+        allCampaigns = allCampaigns.filter(c => c.status === filters.status);
+      }
+      if (filters.category) {
+        allCampaigns = allCampaigns.filter(c => c.category === filters.category);
       }
       
+      // Sort by creation date (newest first)
+      allCampaigns.sort((a, b) => b.createdAt - a.createdAt);
+      
+      console.log('[fetchCampaigns] Final campaigns after filters:', allCampaigns.length);
       return allCampaigns;
     } catch (error) {
-      console.warn('Error fetching campaigns from contract, falling back to local:', error);
+      console.warn('[fetchCampaigns] Error fetching campaigns from contract, falling back to local:', error);
       // Fall back to local campaigns if contract read fails
-      return cloneCampaigns();
+      // Show ALL local campaigns regardless of owner
+      let filtered = localCampaigns;
+      if (filters.status) {
+        filtered = filtered.filter(c => c.status === filters.status);
+      }
+      if (filters.category) {
+        filtered = filtered.filter(c => c.category === filters.category);
+      }
+      filtered.sort((a, b) => b.createdAt - a.createdAt);
+      console.log('[fetchCampaigns] Returning local campaigns only:', filtered.length);
+      return filtered;
     }
   }
   
-  // If contract is not configured, return local campaigns
-  return cloneCampaigns();
+  // If contract is not configured, return ALL local campaigns with filters applied
+  // Show ALL campaigns to ALL users - NO owner filtering
+  // IMPORTANT: Local campaigns are visible to ALL accounts in the same browser
+  // For cross-browser visibility, configure the contract (VITE_MASSA_CONTRACT_ADDRESS)
+  console.log('[fetchCampaigns] Contract not configured, using local campaigns only');
+  console.log('[fetchCampaigns] Total local campaigns (ALL owners):', localCampaigns.length);
+  
+  // Show ALL campaigns regardless of owner - no filtering by owner address
+  let filtered = localCampaigns;
+  if (filters.status) {
+    filtered = filtered.filter(c => c.status === filters.status);
+    console.log('[fetchCampaigns] After status filter:', filtered.length);
+  }
+  if (filters.category) {
+    filtered = filtered.filter(c => c.category === filters.category);
+    console.log('[fetchCampaigns] After category filter:', filtered.length);
+  }
+  filtered.sort((a, b) => b.createdAt - a.createdAt);
+  console.log('[fetchCampaigns] Returning ALL local campaigns (no owner filter):', filtered.length);
+  return filtered;
 }
 
 export async function fetchCampaignById(id: number): Promise<AdCampaign> {
@@ -333,6 +371,47 @@ function saveLocalCampaigns(items: AdCampaign[]) {
   }
 }
 
+function broadcastCampaignsUpdated(adId?: number) {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    const timestamp = Date.now().toString();
+    window.localStorage.setItem('massa_campaigns_updated', timestamp);
+    window.dispatchEvent(
+      new CustomEvent('massa_campaigns_updated', {
+        detail: { timestamp, campaignId: adId },
+      }),
+    );
+  }
+}
+
+function updateLocalCampaign(
+  id: number,
+  updater: (c: AdCampaign) => AdCampaign,
+): AdCampaign | null {
+  const items = getLocalCampaigns();
+  const idx = items.findIndex((c) => c.id === id);
+  if (idx === -1) return null;
+  const updated = updater(items[idx]);
+  items[idx] = { ...items[idx], ...updated, updatedAt: Date.now() } as AdCampaign;
+  saveLocalCampaigns(items);
+  broadcastCampaignsUpdated(id);
+  return items[idx];
+}
+
+export async function recordLocalImpression(id: number): Promise<void> {
+  updateLocalCampaign(id, (c) => ({ ...c, impressions: (c.impressions ?? 0) + 1 }));
+}
+
+export async function recordLocalClick(id: number): Promise<void> {
+  updateLocalCampaign(id, (c) => {
+    const next: Partial<AdCampaign> = { clicks: (c.clicks ?? 0) + 1 };
+    if (c.pricingModel === 'cpc' && typeof c.costPerClick === 'number') {
+      const spent = (c.spent ?? 0) + c.costPerClick;
+      next.spent = Math.min(spent, c.budget ?? spent);
+    }
+    return { ...(c as any), ...next } as AdCampaign;
+  });
+}
+
 export function countLocalCampaigns(ownerAddress?: string) {
   const all = getLocalCampaigns();
   if (!ownerAddress) return all.length;
@@ -341,8 +420,12 @@ export function countLocalCampaigns(ownerAddress?: string) {
 
 export async function createLocalCampaignForOwner(ownerAddress: string, input: CreateCampaignInput): Promise<AdCampaign> {
   // create a lightweight local campaign to allow demos without a deployed contract
+  // These campaigns are stored in localStorage and visible to ALL accounts
   const existing = getLocalCampaigns();
-  const nextId = existing.length > 0 ? Math.max(...existing.map((c) => c.id)) + 1 : Date.now();
+  // Use a more unique ID to avoid conflicts - combine timestamp with random number
+  const nextId = existing.length > 0 
+    ? Math.max(...existing.map((c) => c.id)) + 1 
+    : Date.now() + Math.floor(Math.random() * 1000);
   const now = Date.now();
   
   // Map creativeUri to imageUrl if it's a data URL or valid image URL
@@ -360,7 +443,7 @@ export async function createLocalCampaignForOwner(ownerAddress: string, input: C
   
   const campaign: AdCampaign = {
     id: Number(nextId),
-    owner: ownerAddress || 'local_hoster',
+    owner: ownerAddress || 'demo_hoster',
     title: input.title,
     description: input.description,
     category: input.category as AdCampaign['category'],
@@ -374,14 +457,28 @@ export async function createLocalCampaignForOwner(ownerAddress: string, input: C
     costPerImpression: input.pricingModel === 'cpm' ? input.rate : null,
     budget: input.budget,
     spent: 0,
-    status: 'active',
+    status: 'active', // Always set to active so it's visible in marketplace
     impressions: 0,
     clicks: 0,
     createdAt: now,
     updatedAt: now,
   };
+  
+  // Add to the beginning of the array (newest first)
   existing.unshift(campaign);
   saveLocalCampaigns(existing);
+  
+  // Trigger storage event to notify other tabs/windows immediately
+  if (typeof window !== 'undefined' && window.localStorage) {
+    const timestamp = Date.now().toString();
+    window.localStorage.setItem('massa_campaigns_updated', timestamp);
+    // Dispatch custom event for same-tab listeners (StorageEvent only works across tabs)
+    window.dispatchEvent(new CustomEvent('massa_campaigns_updated', {
+      detail: { timestamp, campaignId: campaign.id }
+    }));
+  }
+  
+  // Return the campaign immediately
   return campaign;
 }
 
@@ -507,6 +604,7 @@ export async function createCampaignOnChain(
   input: CreateCampaignInput,
 ): Promise<void> {
   if (!contractConfigured) {
+    // If contract not configured, fall back to local storage for demo
     await simulateNetworkLatency();
     return;
   }
@@ -521,11 +619,15 @@ export async function createCampaignOnChain(
     .addU64(masToNano(input.rate))
     .addU64(masToNano(input.budget));
 
+  // Ensure budget is at least the minimum required (0.000001 MAS for free plan, or user's budget)
+  const minBudget = Math.max(input.budget, 0.000001);
+  const coinsToSend = Mas.fromString(minBudget.toString());
+  
   await provider.callSC({
     target: CONTRACT_ADDRESS!,
     func: 'createCampaign',
     parameter: args,
-    coins: Mas.fromString(input.budget.toString()),
+    coins: coinsToSend,
     fee: Mas.fromString('0.05'),
     maxGas: DEFAULT_MAX_GAS,
   });
@@ -545,6 +647,51 @@ export async function updateCampaignStatusOnChain(
   await provider.callSC({
     target: CONTRACT_ADDRESS!,
     func: 'updateCampaignStatus',
+    parameter: args,
+    ...DEFAULT_CALL_OPTIONS,
+  });
+}
+
+export async function updateCampaignDetailsOnChain(
+  account: Provider | null,
+  id: number,
+  input: Pick<CreateCampaignInput, 'title' | 'description' | 'category' | 'targetUrl' | 'creativeUri' | 'pricingModel' | 'rate'>,
+): Promise<void> {
+  if (!contractConfigured) {
+    await simulateNetworkLatency();
+    return;
+  }
+  const provider = ensureAccount(account);
+  const args = new Args()
+    .addU32(BigInt(id))
+    .addString(input.title)
+    .addString(input.description)
+    .addString(input.category)
+    .addString(input.targetUrl)
+    .addString(input.creativeUri)
+    .addString(input.pricingModel)
+    .addU64(masToNano(input.rate));
+  await provider.callSC({
+    target: CONTRACT_ADDRESS!,
+    func: 'updateCampaignDetails',
+    parameter: args,
+    ...DEFAULT_CALL_OPTIONS,
+  });
+}
+
+export async function deleteCampaignOnChain(
+  account: Provider | null,
+  id: number,
+): Promise<void> {
+  if (!contractConfigured) {
+    await simulateNetworkLatency();
+    return;
+  }
+  const provider = ensureAccount(account);
+  const args = new Args().addU32(BigInt(id));
+  await provider.callSC({
+    target: CONTRACT_ADDRESS!,
+    func: 'deleteCampaign',
     parameter: args,
     ...DEFAULT_CALL_OPTIONS,
   });
@@ -583,4 +730,39 @@ export async function triggerScheduledPayoutsOnChain(
     ...DEFAULT_CALL_OPTIONS,
   });
 }
+
+export async function recordImpressionOnChain(
+  account: Provider | null,
+  id: number,
+): Promise<void> {
+  if (!contractConfigured) {
+    return;
+  }
+  const provider = ensureAccount(account);
+  const args = new Args().addU32(BigInt(id));
+  await provider.callSC({
+    target: CONTRACT_ADDRESS!,
+    func: 'recordImpression',
+    parameter: args,
+    ...DEFAULT_CALL_OPTIONS,
+  });
+}
+
+export async function recordClickOnChain(
+  account: Provider | null,
+  id: number,
+): Promise<void> {
+  if (!contractConfigured) {
+    return;
+  }
+  const provider = ensureAccount(account);
+  const args = new Args().addU32(BigInt(id));
+  await provider.callSC({
+    target: CONTRACT_ADDRESS!,
+    func: 'recordClick',
+    parameter: args,
+    ...DEFAULT_CALL_OPTIONS,
+  });
+}
+
 

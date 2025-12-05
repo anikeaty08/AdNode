@@ -4,6 +4,9 @@ import { Button } from '@/components/ui/button';
 import { Eye, MousePointerClick, DollarSign } from 'lucide-react';
 import { motion } from 'framer-motion';
 import type { AdCampaign } from '@shared/schema';
+import { useEffect } from 'react';
+import { useWallet } from '@/contexts/WalletContext';
+import { contractConfigured, recordClickOnChain, recordImpressionOnChain, recordLocalClick, recordLocalImpression } from '@/lib/massa-contract';
 
 interface AdCardProps {
   ad: AdCampaign;
@@ -15,6 +18,15 @@ interface AdCardProps {
 export function AdCard({ ad, onViewDetails, onIntegrate, showEarnings = false }: AdCardProps) {
   const paymentRate = ad.pricingModel === 'cpc' ? ad.costPerClick : ad.costPerImpression;
   const paymentLabel = ad.pricingModel === 'cpc' ? 'per click' : 'per 1000 impressions';
+  const { accountProvider } = useWallet();
+
+  useEffect(() => {
+    if (contractConfigured && accountProvider) {
+      recordImpressionOnChain(accountProvider, ad.id).catch(() => {});
+    } else {
+      recordLocalImpression(ad.id).catch(() => {});
+    }
+  }, [ad.id]);
 
   const handleCardClick = (e: React.MouseEvent) => {
     // Don't navigate if clicking on buttons or interactive elements
@@ -22,9 +34,27 @@ export function AdCard({ ad, onViewDetails, onIntegrate, showEarnings = false }:
     if (target.closest('button') || target.closest('a')) {
       return;
     }
-    // Navigate to target URL
-    if (ad.targetUrl) {
-      window.open(ad.targetUrl, '_blank', 'noopener,noreferrer');
+    // Navigate to target URL only if it's a valid external URL
+    if (ad.targetUrl && (ad.targetUrl.startsWith('http://') || ad.targetUrl.startsWith('https://'))) {
+      const key = `ad_click_last:${ad.id}`;
+      const now = Date.now();
+      const last = Number(sessionStorage.getItem(key) || 0);
+      if (now - last < 2000) {
+        return;
+      }
+      sessionStorage.setItem(key, String(now));
+      const doNav = () => window.open(ad.targetUrl, '_blank', 'noopener,noreferrer');
+      if (contractConfigured && accountProvider) {
+        recordClickOnChain(accountProvider, ad.id).finally(doNav);
+      } else {
+        recordLocalClick(ad.id).finally(doNav);
+      }
+    } else if (onViewDetails) {
+      // If no valid target URL, show details modal instead
+      onViewDetails(ad);
+    } else if (onIntegrate) {
+      // Or show integrate modal
+      onIntegrate(ad);
     }
   };
 
@@ -43,12 +73,26 @@ export function AdCard({ ad, onViewDetails, onIntegrate, showEarnings = false }:
       >
         <CardHeader className="p-0">
           {ad.imageUrl || (ad.creativeUri && (ad.creativeUri.startsWith('data:') || ad.creativeUri.match(/\.(jpg|jpeg|png|gif|webp|svg)$/i))) ? (
-            <a 
-              href={ad.targetUrl} 
-              target="_blank" 
-              rel="noopener noreferrer"
-              onClick={(e) => e.stopPropagation()}
-              className="block aspect-video w-full overflow-hidden rounded-t-lg bg-muted"
+            <div
+              onClick={(e) => {
+                e.stopPropagation();
+                if (ad.targetUrl && (ad.targetUrl.startsWith('http://') || ad.targetUrl.startsWith('https://'))) {
+                  const key = `ad_click_last:${ad.id}`;
+                  const now = Date.now();
+                  const last = Number(sessionStorage.getItem(key) || 0);
+                  if (now - last < 2000) {
+                    return;
+                  }
+                  sessionStorage.setItem(key, String(now));
+                  const doNav = () => window.open(ad.targetUrl, '_blank', 'noopener,noreferrer');
+                  if (contractConfigured && accountProvider) {
+                    recordClickOnChain(accountProvider, ad.id).finally(doNav);
+                  } else {
+                    recordLocalClick(ad.id).finally(doNav);
+                  }
+                }
+              }}
+              className="block aspect-video w-full overflow-hidden rounded-t-lg bg-muted cursor-pointer"
             >
               <img
                 src={ad.imageUrl || ad.creativeUri}
@@ -64,31 +108,59 @@ export function AdCard({ ad, onViewDetails, onIntegrate, showEarnings = false }:
                   }
                 }}
               />
-            </a>
+            </div>
           ) : (
-            <a 
-              href={ad.targetUrl} 
-              target="_blank" 
-              rel="noopener noreferrer"
-              onClick={(e) => e.stopPropagation()}
-              className="block aspect-video w-full rounded-t-lg bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center hover:from-primary/30 hover:to-primary/10 transition-colors"
+            <div
+              onClick={(e) => {
+                e.stopPropagation();
+                if (ad.targetUrl && (ad.targetUrl.startsWith('http://') || ad.targetUrl.startsWith('https://'))) {
+                  const key = `ad_click_last:${ad.id}`;
+                  const now = Date.now();
+                  const last = Number(sessionStorage.getItem(key) || 0);
+                  if (now - last < 2000) {
+                    return;
+                  }
+                  sessionStorage.setItem(key, String(now));
+                  const doNav = () => window.open(ad.targetUrl, '_blank', 'noopener,noreferrer');
+                  if (contractConfigured && accountProvider) {
+                    recordClickOnChain(accountProvider, ad.id).finally(doNav);
+                  } else {
+                    recordLocalClick(ad.id).finally(doNav);
+                  }
+                }
+              }}
+              className="block aspect-video w-full rounded-t-lg bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center hover:from-primary/30 hover:to-primary/10 transition-colors cursor-pointer"
             >
               <span className="text-6xl font-display font-bold text-primary/40">M</span>
-            </a>
+            </div>
           )}
         </CardHeader>
 
         <CardContent className="flex-1 p-6 space-y-4">
           <div className="flex items-start justify-between gap-2">
-            <a 
-              href={ad.targetUrl} 
-              target="_blank" 
-              rel="noopener noreferrer"
-              onClick={(e) => e.stopPropagation()}
+            <div
+              onClick={(e) => {
+                e.stopPropagation();
+                if (ad.targetUrl && (ad.targetUrl.startsWith('http://') || ad.targetUrl.startsWith('https://'))) {
+                  const key = `ad_click_last:${ad.id}`;
+                  const now = Date.now();
+                  const last = Number(sessionStorage.getItem(key) || 0);
+                  if (now - last < 2000) {
+                    return;
+                  }
+                  sessionStorage.setItem(key, String(now));
+                  const doNav = () => window.open(ad.targetUrl, '_blank', 'noopener,noreferrer');
+                  if (contractConfigured && accountProvider) {
+                    recordClickOnChain(accountProvider, ad.id).finally(doNav);
+                  } else {
+                    recordLocalClick(ad.id).finally(doNav);
+                  }
+                }
+              }}
               className="font-semibold text-lg leading-tight line-clamp-2 hover:text-primary transition-colors cursor-pointer"
             >
               {ad.title}
-            </a>
+            </div>
             <Badge variant="secondary" className="shrink-0">
               {ad.category}
             </Badge>

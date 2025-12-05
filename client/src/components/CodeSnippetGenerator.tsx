@@ -12,20 +12,21 @@ import 'prismjs/components/prism-php';
 import { useEffect, useRef } from 'react';
 
 interface CodeSnippetGeneratorProps {
-  adId: string;
+  adId: string | number;
 }
 
 export function CodeSnippetGenerator({ adId }: CodeSnippetGeneratorProps) {
   const [copiedTab, setCopiedTab] = useState<string | null>(null);
   const codeRefs = useRef<{ [key: string]: HTMLElement | null }>({});
+  const idStr = String(adId);
 
   const snippets = {
     html: `<!-- Add this to your HTML -->
-<div id="massa-ad-${adId}"></div>
+<div id="massa-ad-${idStr}"></div>
 <script src="https://deads.massa.net/sdk.js"></script>
 <script>
-  MassaAds.display('${adId}', {
-    container: 'massa-ad-${adId}',
+  MassaAds.display('${idStr}', {
+    container: 'massa-ad-${idStr}',
     position: 'center'
   });
 </script>`,
@@ -36,7 +37,7 @@ import { MassaAd } from '@massa-deads/react';
 function MyComponent() {
   return (
     <MassaAd 
-      adId="${adId}"
+      adId="${idStr}"
       position="center"
       onImpression={(data) => console.log('Impression:', data)}
       onClick={(data) => console.log('Click:', data)}
@@ -51,7 +52,7 @@ export default function Page() {
   return (
     <div>
       <MassaAd 
-        adId="${adId}"
+        adId="${idStr}"
         position="center"
         className="my-4"
       />
@@ -62,7 +63,7 @@ export default function Page() {
     vue: `<!-- Install: npm install @massa-deads/vue -->
 <template>
   <MassaAd 
-    ad-id="${adId}"
+    ad-id="${idStr}"
     position="center"
     @impression="handleImpression"
     @click="handleClick"
@@ -91,7 +92,7 @@ from massa_deads import MassaAds
 # Flask example
 @app.route('/')
 def index():
-    ad_widget = MassaAds.get_widget('${adId}', position='center')
+    ad_widget = MassaAds.get_widget('${idStr}', position='center')
     return render_template('index.html', ad_widget=ad_widget)
 
 # Template (Jinja2)
@@ -104,7 +105,7 @@ require 'vendor/autoload.php';
 use MassaDeads\\Client;
 
 $client = new Client();
-$adWidget = $client->getAdWidget('${adId}', [
+$adWidget = $client->getAdWidget('${idStr}', [
     'position' => 'center',
     'className' => 'my-ad'
 ]);

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -46,8 +46,37 @@ export default function DeveloperDashboard() {
 
   const { data: campaignData = [], isFetching } = useQuery({
     queryKey: ['campaigns', 'market'],
-    queryFn: () => fetchCampaigns({ limit: 80 }),
+    queryFn: () => {
+      console.log('[DeveloperDashboard] Fetching ALL campaigns from ALL accounts...');
+      return fetchCampaigns({ limit: 200, status: 'active' }); // Fetch ALL active campaigns from ALL accounts (no owner filter)
+    },
+    staleTime: 0,
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
+    refetchInterval: 2000, // Refetch every 2 seconds to catch new campaigns IMMEDIATELY
   });
+
+  // Listen for storage events to refresh when campaigns are created in other tabs
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'massa_campaigns_updated') {
+        queryClient.invalidateQueries({ queryKey: ['campaigns'] });
+      }
+    };
+
+    // Also listen for same-tab custom events (dispatched manually)
+    const handleCustomEvent = () => {
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] });
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('massa_campaigns_updated', handleCustomEvent);
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('massa_campaigns_updated', handleCustomEvent);
+    };
+  }, [queryClient]);
 
   const developerAddress = account?.address ?? '';
 
@@ -56,7 +85,10 @@ export default function DeveloperDashboard() {
     queryFn: () => fetchDeveloperProfile(developerAddress || undefined),
   });
 
-  const availableAds = useMemo(() => campaignData, [campaignData]);
+  // Filter to only show active campaigns from all accounts
+  const availableAds = useMemo(() => {
+    return campaignData.filter((ad) => ad.status === 'active');
+  }, [campaignData]);
 
   const earningsBreakdown = developerProfile
     ? [
@@ -283,7 +315,7 @@ export default function DeveloperDashboard() {
               <CardContent>
                 <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {earningsBreakdown.map((earning) => {
-                    const ad = availableAds.find(a => a.id === earning.adId);
+                    const ad = availableAds.find(a => String(a.id) === String(earning.adId));
                     return ad ? (
                       <AdCard
                         key={ad.id}
