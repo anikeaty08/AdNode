@@ -24,20 +24,37 @@ export function FileUpload({
   description = 'Drag and drop or click to browse',
 }: FileUploadProps) {
   const [preview, setPreview] = useState<string | null>(null);
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
 
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
       if (acceptedFiles.length > 0) {
         const file = acceptedFiles[0];
-        onFileSelect(file);
-
+        
         if (file.type.startsWith('image/')) {
           const reader = new FileReader();
-          reader.onload = () => setPreview(reader.result as string);
+          reader.onload = () => {
+            const result = reader.result as string;
+            setPreview(result);
+            setDataUrl(result);
+            // Create a custom file-like object with the data URL
+            const fileWithDataUrl = Object.assign(file, { dataUrl: result });
+            onFileSelect(fileWithDataUrl as any);
+          };
           reader.readAsDataURL(file);
         } else if (file.type.startsWith('video/')) {
           const url = URL.createObjectURL(file);
           setPreview(url);
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result as string;
+            setDataUrl(result);
+            const fileWithDataUrl = Object.assign(file, { dataUrl: result });
+            onFileSelect(fileWithDataUrl as any);
+          };
+          reader.readAsDataURL(file);
+        } else {
+          onFileSelect(file);
         }
       }
     },
@@ -53,6 +70,7 @@ export function FileUpload({
 
   const handleRemove = () => {
     setPreview(null);
+    setDataUrl(null);
     if (onRemove) onRemove();
   };
 

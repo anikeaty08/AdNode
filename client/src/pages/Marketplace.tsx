@@ -23,11 +23,18 @@ export default function Marketplace() {
 
   const { data: allAds = [], isFetching } = useQuery({
     queryKey: ['campaigns', 'marketplace'],
-    queryFn: () => fetchCampaigns({ limit: 80, status: 'active' }),
+    queryFn: () => fetchCampaigns({ limit: 200, status: 'active' }), // Increased limit to show all campaigns
+    staleTime: 0, // Always consider data stale to ensure fresh data when refetched
+    refetchOnMount: true, // Always refetch when component mounts
+    refetchOnWindowFocus: true, // Refetch when window regains focus
   });
 
   const filteredAds = useMemo(() => {
-    return allAds.filter((ad) => {
+    // First, ensure we only show active campaigns
+    const activeAds = allAds.filter((ad) => ad.status === 'active');
+    
+    // Then apply search and category filters
+    return activeAds.filter((ad) => {
       const matchesSearch =
         ad.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
         ad.description.toLowerCase().includes(searchQuery.toLowerCase());

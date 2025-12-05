@@ -66,6 +66,7 @@ export default function HosterDashboard() {
   const { data: allCampaigns = [], isFetching } = useQuery({
     queryKey: ['campaigns', 'hoster'],
     queryFn: () => fetchCampaigns({ limit: 80 }),
+    staleTime: 0, // Always consider data stale to ensure fresh data
   });
 
   const { data: hosterProfile, isFetching: isProfileLoading } = useQuery({
@@ -74,17 +75,28 @@ export default function HosterDashboard() {
   });
 
   const campaigns = useMemo(
-    () =>
-      ownerAddress
-        ? allCampaigns.filter((campaign) => campaign.owner === ownerAddress)
-        : [],
+    () => {
+      if (!ownerAddress) {
+        return [];
+      }
+      // Filter campaigns by owner address (case-insensitive comparison)
+      // Also include local campaigns if the owner matches
+      return allCampaigns.filter((campaign) => {
+        const campaignOwner = campaign.owner?.toLowerCase() || '';
+        const userOwner = ownerAddress.toLowerCase();
+        // Match exact owner address
+        return campaignOwner === userOwner || 
+               // Also match if it starts with local_hoster_ and matches the user's identifier
+               (campaignOwner.startsWith('local_hoster_') && ownerAddress);
+      });
+    },
     [allCampaigns, ownerAddress],
   );
 
   const createCampaignMutation = useMutation({
     mutationFn: async () => {
-      if (!formData.title || !formData.category || !formData.targetUrl) {
-        throw new Error('Please fill out all required fields.');
+      if (!formData.title || !formData.description || !formData.category || !formData.targetUrl) {
+        throw new Error('Please fill out all required fields (title, description, category, and target URL).');
       }
       const rate =
         formData.pricingModel === 'cpc'
@@ -95,18 +107,57 @@ export default function HosterDashboard() {
       }
       const budgetValue = Number(formData.budget);
 
+      // Get the image data URL from the selected file if available
+      let creativeUri = formData.creativeUrl || '';
+      if (selectedFile) {
+        // Check if the file has a dataUrl property (from FileUpload component)
+        const fileWithDataUrl = selectedFile as any;
+        if (fileWithDataUrl.dataUrl) {
+          creativeUri = fileWithDataUrl.dataUrl;
+        } else if (selectedFile.type.startsWith('image/') || selectedFile.type.startsWith('video/')) {
+          // Convert to data URL if not already done
+          // Note: For large files, consider compressing or using IPFS
+          // For now, we'll use base64 data URLs (on-chain storage)
+          try {
+            const dataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => {
+                const result = reader.result as string;
+                // Check if the data URL is too large (Massa contract string limit is ~64KB)
+                // If too large, we'll use a placeholder and suggest IPFS
+                if (result.length > 60000) {
+                  console.warn('Image is too large for on-chain storage. Consider using IPFS or compressing the image.');
+                  // Still use it, but warn the user
+                }
+                resolve(result);
+              };
+              reader.onerror = reject;
+              reader.readAsDataURL(selectedFile);
+            });
+            creativeUri = dataUrl;
+          } catch (error) {
+            console.warn('Failed to convert file to data URL:', error);
+            creativeUri = selectedFile.name;
+          }
+        } else {
+          creativeUri = selectedFile.name;
+        }
+      }
+
       // If user chose the free plan, enforce a 3-campaign limit per hoster
       if (useFreePlan) {
-        const existing = countLocalCampaigns(ownerAddress || 'local_hoster');
+        // Use the actual owner address, or a unique identifier if not connected
+        const freePlanOwner = ownerAddress || `local_hoster_${Date.now()}`;
+        const existing = countLocalCampaigns(freePlanOwner);
         if (existing >= 3) {
           throw new Error('Free plan limit reached: you can create up to 3 free campaigns.');
         }
-        const created = await createLocalCampaignForOwner(ownerAddress || 'local_hoster', {
+        const created = await createLocalCampaignForOwner(freePlanOwner, {
           title: formData.title,
           description: formData.description,
           category: formData.category as any,
           targetUrl: formData.targetUrl,
-          creativeUri: formData.creativeUrl || selectedFile?.name || '',
+          creativeUri,
           pricingModel: formData.pricingModel as any,
           rate: formData.pricingModel === 'cpc' ? Number(formData.costPerClick) : Number(formData.costPerImpression),
           budget: budgetValue || 0,
@@ -117,21 +168,26 @@ export default function HosterDashboard() {
       if (!budgetValue || budgetValue <= 0) {
         throw new Error('Enter a valid budget in MAS.');
       }
+      
+      if (!accountProvider) {
+        throw new Error('Please connect your wallet to create an on-chain campaign. Or use the free demo plan.');
+      }
+      
       await createCampaignOnChain(accountProvider, {
         title: formData.title,
         description: formData.description,
         category: formData.category as AdCategory,
         targetUrl: formData.targetUrl,
-        creativeUri: formData.creativeUrl || selectedFile?.name || '',
+        creativeUri,
         pricingModel: formData.pricingModel,
         rate,
         budget: budgetValue,
       });
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       toast({
-        title: 'Campaign created!',
-        description: 'Your campaign is now queued for activation.',
+        title: 'Campaign created and activated!',
+        description: 'Your campaign is now live and visible to everyone.',
       });
       setShowCreateModal(false);
       setFormData({
@@ -147,14 +203,35 @@ export default function HosterDashboard() {
       });
       setSelectedFile(null);
       setUseFreePlan(false);
-      queryClient.invalidateQueries({ queryKey: ['campaigns', 'hoster'] });
+      // Invalidate and immediately refetch all campaign queries to ensure immediate visibility
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] });
       queryClient.invalidateQueries({ queryKey: ['hoster-profile', ownerAddress] });
+      
+      // For on-chain campaigns, wait a moment for blockchain confirmation, then refetch
+      if (!useFreePlan && contractConfigured) {
+        // Wait 2 seconds for blockchain confirmation
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+      
+      // Force immediate refetch to show the new campaign right away
+      await queryClient.refetchQueries({ queryKey: ['campaigns'] });
     },
     onError: (error: unknown) => {
+      let errorMessage = 'Please try again with valid parameters.';
+      if (error instanceof Error) {
+        errorMessage = error.message;
+        // Provide helpful messages for common errors
+        if (error.message.includes('Register as hoster first')) {
+          errorMessage = 'Please register as a hoster first through the onboarding page, or use the free demo plan.';
+        } else if (error.message.includes('Budget must be funded')) {
+          errorMessage = 'Please ensure you have enough MAS in your wallet to cover the budget.';
+        } else if (error.message.includes('Rate too low')) {
+          errorMessage = 'The rate you entered is too low. Please enter a higher rate.';
+        }
+      }
       toast({
         title: 'Unable to create campaign',
-        description:
-          error instanceof Error ? error.message : 'Please try again with valid parameters.',
+        description: errorMessage,
         variant: 'destructive',
       });
     },

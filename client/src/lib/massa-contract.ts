@@ -68,13 +68,27 @@ function decodeCampaign(args: Args): AdCampaign {
   const budget = nanoToMasNumber(budgetRaw);
   const spent = nanoToMasNumber(spentRaw);
 
+  // Map creativeUri to imageUrl if it's a data URL or valid image URL
+  let imageUrl: string | undefined = undefined;
+  if (creativeUri) {
+    if (creativeUri.startsWith('data:image/') || creativeUri.startsWith('data:video/')) {
+      // It's a base64 data URL - use it directly
+      imageUrl = creativeUri;
+    } else if (creativeUri.match(/\.(jpg|jpeg|png|gif|webp|svg)$/i)) {
+      // It's an image file reference - could be IPFS or HTTP URL
+      imageUrl = creativeUri.startsWith('http') || creativeUri.startsWith('ipfs://') 
+        ? creativeUri 
+        : undefined;
+    }
+  }
+
   return {
     id,
     owner,
     title,
     description,
     category: category as AdCampaign['category'],
-    imageUrl: undefined,
+    imageUrl,
     videoUrl: null,
     htmlSnippet: null,
     targetUrl,
@@ -208,20 +222,43 @@ async function safeFetch<T>(task: () => Promise<T>, fallback: () => T) {
 export async function fetchCampaigns(
   filters: CampaignFilters = {},
 ): Promise<AdCampaign[]> {
-  return safeFetch(async () => {
-    const args = new Args()
-      .addU32(BigInt(filters.offset ?? 0))
-      .addU32(BigInt(filters.limit ?? 24))
-      .addString(filters.category ?? '')
-      .addString(filters.status ?? '');
-    const response = await read('listCampaigns', args);
-    const count = Number(response.nextU32());
-    const campaigns: AdCampaign[] = [];
-    for (let i = 0; i < count; i++) {
-      campaigns.push(decodeCampaign(response));
+  // If contract is configured, always try to fetch from contract first
+  if (contractConfigured) {
+    try {
+      const args = new Args()
+        .addU32(BigInt(filters.offset ?? 0))
+        .addU32(BigInt(filters.limit ?? 80)) // Increased limit to get more campaigns
+        .addString(filters.category ?? '')
+        .addString(filters.status ?? '');
+      const response = await read('listCampaigns', args);
+      const count = Number(response.nextU32());
+      const onChainCampaigns: AdCampaign[] = [];
+      for (let i = 0; i < count; i++) {
+        onChainCampaigns.push(decodeCampaign(response));
+      }
+      
+      // Also get local campaigns and combine them (for free plan campaigns)
+      const localCampaigns = cloneCampaigns();
+      
+      // Combine on-chain and local campaigns, removing duplicates by ID
+      const allCampaigns = [...onChainCampaigns];
+      const onChainIds = new Set(onChainCampaigns.map(c => c.id));
+      for (const local of localCampaigns) {
+        if (!onChainIds.has(local.id)) {
+          allCampaigns.push(local);
+        }
+      }
+      
+      return allCampaigns;
+    } catch (error) {
+      console.warn('Error fetching campaigns from contract, falling back to local:', error);
+      // Fall back to local campaigns if contract read fails
+      return cloneCampaigns();
     }
-    return campaigns;
-  }, cloneCampaigns);
+  }
+  
+  // If contract is not configured, return local campaigns
+  return cloneCampaigns();
 }
 
 export async function fetchCampaignById(id: number): Promise<AdCampaign> {
@@ -307,17 +344,31 @@ export async function createLocalCampaignForOwner(ownerAddress: string, input: C
   const existing = getLocalCampaigns();
   const nextId = existing.length > 0 ? Math.max(...existing.map((c) => c.id)) + 1 : Date.now();
   const now = Date.now();
+  
+  // Map creativeUri to imageUrl if it's a data URL or valid image URL
+  let imageUrl: string | undefined = undefined;
+  const creativeUri = input.creativeUri || '';
+  if (creativeUri) {
+    if (creativeUri.startsWith('data:image/') || creativeUri.startsWith('data:video/')) {
+      imageUrl = creativeUri;
+    } else if (creativeUri.match(/\.(jpg|jpeg|png|gif|webp|svg)$/i)) {
+      imageUrl = creativeUri.startsWith('http') || creativeUri.startsWith('ipfs://') 
+        ? creativeUri 
+        : undefined;
+    }
+  }
+  
   const campaign: AdCampaign = {
     id: Number(nextId),
     owner: ownerAddress || 'local_hoster',
     title: input.title,
     description: input.description,
     category: input.category as AdCampaign['category'],
-    imageUrl: undefined,
+    imageUrl,
     videoUrl: null,
     htmlSnippet: null,
     targetUrl: input.targetUrl,
-    creativeUri: input.creativeUri || '',
+    creativeUri,
     pricingModel: input.pricingModel as AdCampaign['pricingModel'],
     costPerClick: input.pricingModel === 'cpc' ? input.rate : null,
     costPerImpression: input.pricingModel === 'cpm' ? input.rate : null,

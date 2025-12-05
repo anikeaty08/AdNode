@@ -16,6 +16,18 @@ export function AdCard({ ad, onViewDetails, onIntegrate, showEarnings = false }:
   const paymentRate = ad.pricingModel === 'cpc' ? ad.costPerClick : ad.costPerImpression;
   const paymentLabel = ad.pricingModel === 'cpc' ? 'per click' : 'per 1000 impressions';
 
+  const handleCardClick = (e: React.MouseEvent) => {
+    // Don't navigate if clicking on buttons or interactive elements
+    const target = e.target as HTMLElement;
+    if (target.closest('button') || target.closest('a')) {
+      return;
+    }
+    // Navigate to target URL
+    if (ad.targetUrl) {
+      window.open(ad.targetUrl, '_blank', 'noopener,noreferrer');
+    }
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.95 }}
@@ -24,26 +36,59 @@ export function AdCard({ ad, onViewDetails, onIntegrate, showEarnings = false }:
       whileHover={{ y: -4 }}
       className="h-full"
     >
-      <Card className="h-full flex flex-col hover:shadow-lg transition-all duration-200" data-testid={`card-ad-${ad.id}`}>
+      <Card 
+        className="h-full flex flex-col hover:shadow-lg transition-all duration-200 cursor-pointer" 
+        data-testid={`card-ad-${ad.id}`}
+        onClick={handleCardClick}
+      >
         <CardHeader className="p-0">
-          {ad.imageUrl ? (
-            <div className="aspect-video w-full overflow-hidden rounded-t-lg bg-muted">
+          {ad.imageUrl || (ad.creativeUri && (ad.creativeUri.startsWith('data:') || ad.creativeUri.match(/\.(jpg|jpeg|png|gif|webp|svg)$/i))) ? (
+            <a 
+              href={ad.targetUrl} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="block aspect-video w-full overflow-hidden rounded-t-lg bg-muted"
+            >
               <img
-                src={ad.imageUrl}
+                src={ad.imageUrl || ad.creativeUri}
                 alt={ad.title}
                 className="h-full w-full object-cover"
+                onError={(e) => {
+                  // Fallback if image fails to load
+                  const target = e.target as HTMLImageElement;
+                  target.style.display = 'none';
+                  const parent = target.parentElement;
+                  if (parent) {
+                    parent.innerHTML = '<div class="aspect-video w-full rounded-t-lg bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center"><span class="text-6xl font-display font-bold text-primary/40">M</span></div>';
+                  }
+                }}
               />
-            </div>
+            </a>
           ) : (
-            <div className="aspect-video w-full rounded-t-lg bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center">
+            <a 
+              href={ad.targetUrl} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="block aspect-video w-full rounded-t-lg bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center hover:from-primary/30 hover:to-primary/10 transition-colors"
+            >
               <span className="text-6xl font-display font-bold text-primary/40">M</span>
-            </div>
+            </a>
           )}
         </CardHeader>
 
         <CardContent className="flex-1 p-6 space-y-4">
           <div className="flex items-start justify-between gap-2">
-            <h3 className="font-semibold text-lg leading-tight line-clamp-2">{ad.title}</h3>
+            <a 
+              href={ad.targetUrl} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="font-semibold text-lg leading-tight line-clamp-2 hover:text-primary transition-colors cursor-pointer"
+            >
+              {ad.title}
+            </a>
             <Badge variant="secondary" className="shrink-0">
               {ad.category}
             </Badge>
